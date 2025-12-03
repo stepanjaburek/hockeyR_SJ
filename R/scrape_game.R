@@ -839,75 +839,58 @@ scrape_game <- function(game_id){
 
     pbp_full <- pbp %>%
       dplyr::select(-event_id) %>%
-      # --- FIX 1: Handle coordinates using event_team_type ---
-      dplyr::group_by(event_team_type, period, game_id) %>%
+      # add fixed x & y coordinates so home team shoots right, away shoots left
+      dplyr::group_by(event_team, period, game_id) %>%
+      # find median x shot coordinate to tell us which side teams are shooting on
       dplyr::mutate(med_x = stats::median(x[event_type %in% fenwick_events], na.rm = TRUE)) %>%
       dplyr::ungroup() %>%
       dplyr::mutate(
         x_fixed = dplyr::case_when(
-          event_team_type == "home" & med_x > 0 ~ x,
-          event_team_type == "home" & med_x < 0 ~ 0 - x,
-          event_team_type == "away" & med_x > 0 ~ 0 - x,
-          event_team_type == "away" & med_x < 0 ~ x,
-          TRUE ~ x
+          event_team == home_name & med_x > 0 ~ x,
+          event_team == home_name & med_x < 0 ~ 0 - x,
+          event_team == away_name & med_x > 0 ~ 0 - x,
+          event_team == away_name & med_x < 0 ~ x
         ),
         y_fixed = dplyr::case_when(
-          event_team_type == "home" & med_x > 0 ~ y,
-          event_team_type == "home" & med_x < 0 ~ 0 - y,
-          event_team_type == "away" & med_x > 0 ~ 0 - y,
-          event_team_type == "away" & med_x < 0 ~ y,
-          TRUE ~ y
+          event_team == home_name & med_x > 0 ~ y,
+          event_team == home_name & med_x < 0 ~ 0 - y,
+          event_team == away_name & med_x > 0 ~ 0 - y,
+          event_team == away_name & med_x < 0 ~ y
         ),
+        # add shot distance/angle
         shot_distance = dplyr::case_when(
-          event_team_type == "home" & event_type %in% fenwick_events ~
+          event_team == home_name & event_type %in% fenwick_events ~
             round(abs(sqrt((x_fixed - 89)^2 + (y_fixed)^2)),1),
-          event_team_type == "away" & event_type %in% fenwick_events ~
+          event_team == away_name & event_type %in% fenwick_events ~
             round(abs(sqrt((x_fixed - (-89))^2 + (y_fixed)^2)),1)
         ),
         shot_angle = dplyr::case_when(
-          event_team_type == "home" & event_type %in% fenwick_events ~
+          event_team == home_name & event_type %in% fenwick_events ~
             round(abs(atan((0-y_fixed) / (89-x_fixed)) * (180 / pi)),1),
-          event_team_type == "away" & event_type %in% fenwick_events ~
+          event_team == away_name & event_type %in% fenwick_events ~
             round(abs(atan((0-y_fixed) / (-89-x_fixed)) * (180 / pi)),1)
         ),
+        # fix behind the net angles
         shot_angle = ifelse(
-          (event_team_type == "home" & x_fixed > 89) |
-            (event_team_type == "away" & x_fixed < -89),
+          (event_team == home_name & x_fixed > 89) |
+            (event_team == away_name & x_fixed < -89),
           180 - shot_angle,
           shot_angle
         ),
-        
-        # --- FIX 2: Create the missing 'event_idx' and 'description' columns ---
-        # (This logic is copied from the main block so it works here too)
-        event_idx = dplyr::row_number()-1,
-        
-        description = dplyr::case_when(
-          event_type == "PERIOD_START" ~ glue::glue("Start of Period {period}"),
-          event_type == "PERIOD_END" ~ glue::glue("End of Period {period}"),
-          event_type == "GAME_END" ~ "Game End",
-          event_type == "FACEOFF" ~ glue::glue("{event_player_1_name} faceoff won against {event_player_2_name}"),
-          event_type == "BLOCKED_SHOT" ~ glue::glue("{event_player_1_name} shot blocked by {event_player_2_name}"),
-          event_type == "GIVEAWAY" ~ glue::glue("Giveaway by {event_player_1_name}"),
-          event_type == "TAKEAWAY" ~ glue::glue("Takeaway by {event_player_1_name}"),
-          event_type == "HIT" ~ glue::glue("{event_player_1_name} hit {event_player_2_name}"),
-          event_type == "MISSED_SHOT" ~ glue::glue("{event_player_1_name} shot missed wide of net"),
-          event_type == "PENALTY" & typeCode != "BEN" ~ glue::glue("{event_player_1_name} {secondary_type} against {event_player_2_name}"),
-          event_type == "PENALTY" & typeCode == "BEN" ~ glue::glue("{event_team_abbr} bench minor for {secondary_type}"),
-          event_type == "SHOT" ~ glue::glue("{event_player_1_name} shot on goal saved by {event_goalie_name}"),
-          event_type == "STOP" & secondaryReason == "tv-timeout" ~ glue::glue("Stoppage in play ({reason}) - TV timeout"),
-          event_type == "STOP" & secondaryReason == "player-injury" ~ "Stoppage in play (player injury)",
-          event_type == "STOP" & secondaryReason %not_in% c("tv-timeout","player-injury") ~ glue::glue("Stoppage in play ({reason})"),
-          event_type == "GOAL" & !is.na(event_player_4_id) ~ glue::glue("{event_player_1_name} {secondary_type}, assists: {event_player_2_name}, {event_player_3_name}"),
-          event_type == "GOAL" & is.na(event_player_4_id) & !is.na(event_player_3_id) ~ glue::glue("{event_player_1_name} {secondary_type}, assists: {event_player_2_name}"),
-          event_type == "GOAL" & is.na(event_player_3_id) ~ glue::glue("{event_player_1_name} {secondary_type}, unassisted"),
-          TRUE ~ NA_character_
+        event_team_type =  dplyr::case_when(
+          event_team == home_name ~ "home",
+          event_team == away_name ~ "away"
         )
       ) %>%
       dplyr::select(-med_x)
 
-    # --- Standard Select Checks ---
     if("event_player_3_name" %in% names(pbp_full)) {
       pbp_full <- pbp_full %>%
+        #dplyr::mutate_at(
+        #  c("event_player_1_name","event_player_2_name",
+        #      "event_player_3_name","event_goalie_name"),
+        #  ~stringr::str_replace_all(.x, c(" " = ".", "-" = "."))
+        #  ) %>%
         dplyr::select(
           event_type, event, secondary_type, event_team, event_team_type,
           description, period, period_seconds, period_seconds_remaining,
@@ -921,6 +904,11 @@ scrape_game <- function(game_id){
         )
     } else {
       pbp_full <- pbp_full %>%
+        #dplyr::mutate_at(
+        #  c("event_player_1_name","event_player_2_name",
+        #      "event_goalie_name"),
+        #  ~stringr::str_replace_all(.x, c(" " = ".", "-" = "."))
+        #  ) %>%
         dplyr::select(
           event_type, event, secondary_type, event_team, event_team_type,
           description, period, period_seconds, period_seconds_remaining,
@@ -932,8 +920,8 @@ scrape_game <- function(game_id){
           game_id, event_idx,
           tidyselect::everything()
         )
-  }
-    
+    }
+
   } else {
     # no shift data or shot location
     if("event_player_3_name" %in% names(pbp)){
